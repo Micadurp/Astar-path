@@ -7,9 +7,11 @@ struct Node
 {
 	int x = -1;
 	int y = -1;
-	unsigned int cost = UINT32_MAX;
+	unsigned int cost = UINT32_MAX; // Cost to get to node
+	unsigned int distance = UINT32_MAX; // Distance from target
+	unsigned int fcost = UINT32_MAX;
 	char value = 0; // 0 impassable, 1 traversable
-	Node * parent = nullptr; 
+	Node * parent = nullptr;
 };
 
 // Finds nodes based on x and y
@@ -17,20 +19,17 @@ struct find_node {
 	int x;
 	int y;
 	find_node(int x, int y) : x(x), y(y) {}
-	bool operator()(Node const* n) const 
+	bool operator()(const Node * n) const
 	{
 		return n->x == x && n->y == y;
 	}
 };
 
 // Distance from start + distance from target
-unsigned int FindCost(const int& nStartX, const int& nStartY,
-	const int& nTargetX, const int& nTargetY,
+unsigned int FindDistance(const int& nTargetX, const int& nTargetY,
 	const int& nCurrX, const int& nCurrY)
 {
-	int distStart = std::abs(nCurrX - nStartX) + std::abs(nCurrY - nStartY);
-	int distTarget = std::abs(nCurrX - nTargetX) + std::abs(nCurrY - nTargetY);
-	return distStart + distTarget;
+	return std::abs(nCurrX - nTargetX) + std::abs(nCurrY - nTargetY);
 }
 
 int FindPath(const int nStartX, const int nStartY,
@@ -38,10 +37,9 @@ int FindPath(const int nStartX, const int nStartY,
 	const unsigned char* pMap, const int nMapWidth, const int nMapHeight,
 	int* pOutBuffer, const int nOutBufferSize)
 {
-
 	bool pathFound = false;
 	int steps = 0;
-	
+
 	// Are we starting on the target
 	if (nStartX == nTargetX && nStartY == nTargetY)
 	{
@@ -59,6 +57,7 @@ int FindPath(const int nStartX, const int nStartY,
 
 	// Create variables
 	std::vector<Node*> unexplored;
+	unexplored.reserve(4);
 	std::vector<Node*> explored;
 
 
@@ -66,25 +65,29 @@ int FindPath(const int nStartX, const int nStartY,
 	Node * start = new Node();
 	start->x = nStartX;
 	start->y = nStartY;
-	start->cost = FindCost(nStartX, nStartY, nTargetX, nTargetY, nStartX, nStartY);
+	start->cost = 0;
+	start->distance = FindDistance(nTargetX, nTargetY, nStartX, nStartY);
+	start->fcost = start->cost + start->distance;
 	start->value = 1;
+	explored.reserve(start->cost);
 	unexplored.push_back(start);
+	
 
 	while (!pathFound)
 	{
 		Node * current = nullptr;
-		
+
 		// Intentional scope
 		{
-			// Get lowest cost within unexplored
+			// Get lowest fcost within unexplored
 			auto expl = std::min_element(unexplored.begin(), unexplored.end(),
-				[](const Node* x, const Node* y) { return x->cost < y->cost; });
-			// Found lowest cost, move to explored from unexplored
+				[](const Node* x, const Node* y) { return x->fcost < y->fcost; });
+			// Found lowest fcost, move to explored from unexplored
 			explored.push_back(*expl);
 			current = explored.back();
 			unexplored.erase(expl);
 		}
-		
+
 		// Is the newly explored node the target?
 		if (current->x == nTargetX && current->y == nTargetY)
 		{
@@ -114,9 +117,9 @@ int FindPath(const int nStartX, const int nStartY,
 
 			break;
 		}
-		
+
 		// Its dangerous to go alone, take this
-		const int neighbourDirections[4][2] {{ -1,0 },{ 0,-1 },{ 1,0 },{ 0,1 }};
+		const int neighbourDirections[4][2] = { { -1,0 },{ 0,-1 },{ 1,0 },{ 0,1 } };
 
 		// Check the neighbours, no diagonals
 		for (auto neDi : neighbourDirections)
@@ -125,34 +128,38 @@ int FindPath(const int nStartX, const int nStartY,
 			Node * neighbour = new Node();
 			neighbour->x = current->x + neDi[0];
 			neighbour->y = current->y + neDi[1];
-			neighbour->value = tMap[neighbour->x + neighbour->y * nMapWidth];
 
 			// Is the neighbour outside the map?
-			if (neighbour->x < 0 || neighbour->x >= nMapWidth || neighbour->y < 0 || neighbour->y >=nMapHeight)
+			if (neighbour->x < 0 || neighbour->x >= nMapWidth || neighbour->y < 0 || neighbour->y >= nMapHeight)
 			{
 				continue;
-			} 
+			}
 
 			// If not travesable or already explored, skip the neighbour
+			neighbour->value = tMap[neighbour->x + neighbour->y * nMapWidth];
 			auto exploredNeighbour = std::find_if(explored.begin(), explored.end(), find_node(neighbour->x, neighbour->y));
 			if (!neighbour->value || exploredNeighbour != explored.end())
 			{
 				continue;
 			}
-				
+
 			// Get the cost of the neighbour
-			unsigned int tmpCost = FindCost(nStartX, nStartY, nTargetX, nTargetY, neighbour->x, neighbour->y);
+			unsigned int cost = current->cost + 1;
+			unsigned int tmpDistance = FindDistance(nTargetX, nTargetY, neighbour->x, neighbour->y);
 			auto foundNode = std::find_if(unexplored.begin(), unexplored.end(), find_node(neighbour->x, neighbour->y));
 			// If neighbour wasn't found in unexplored, create it, else update the neighbour if new path is shorter.
 			if (foundNode == unexplored.end())
 			{
-				neighbour->cost = tmpCost;
+				neighbour->cost = cost;
+				neighbour->distance = tmpDistance;
+				neighbour->fcost = cost + tmpDistance;
 				neighbour->parent = current;
 				unexplored.push_back(neighbour);
 			}
-			else if (neighbour->cost < tmpCost)
+			else if ((*foundNode)->cost > cost)
 			{
-				(*foundNode)->cost = tmpCost;
+				(*foundNode)->cost = cost;
+				(*foundNode)->fcost = cost + (*foundNode)->distance;
 				(*foundNode)->parent = current;
 			}
 		}
@@ -164,7 +171,7 @@ int FindPath(const int nStartX, const int nStartY,
 			break;
 		}
 	}
-	
+
 	// Cleanup 
 	for (auto node : explored)
 	{
@@ -177,28 +184,38 @@ int FindPath(const int nStartX, const int nStartY,
 	delete[] tMap;
 
 	// Return steps if path is found, else -1
-	return pathFound ? steps : -1;
+	return pathFound ? steps : -1;	
 }
 
 int main()
 {
 	{
-		unsigned char map[] = { 1, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1 };
-		int pOutBuffer[12];
-		int outBufferSize = 12;
-		int steps = FindPath(0, 0, 0, 0, map, 4, 3, pOutBuffer, outBufferSize);
+		unsigned char map[] = { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+								1, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+								1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+								1, 0, 0, 0, 0, 0, 0, 1, 0, 1,
+								1, 0, 1, 1, 1, 1, 0, 1, 0, 1,
+								1, 0, 1, 0, 1, 0, 1, 1, 0, 1,
+								1, 0, 1, 0, 1, 0, 1, 1, 0, 1,
+								1, 1, 1, 0, 1, 1, 1, 1, 0, 1,
+								1, 0, 1, 0, 0, 0, 0, 1, 0, 1,
+								1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+		int pOutBuffer[100];
+		int outBufferSize = 100;
+		int steps = FindPath(0, 0, 2, 2, map, 10, 10, pOutBuffer, outBufferSize);
 
 		std::cout << steps << std::endl;
-		std::cout << pOutBuffer[0];
-		for (int i = 1; i < steps && i < outBufferSize; i++)
+		for (int i = 0; i < steps && i < outBufferSize; i++)
 		{
-			std::cout << ", " << pOutBuffer[i];
+			std::cout << pOutBuffer[i] << " ";
 		}
 		std::cout << std::endl;
 	}
 
 	{
-		unsigned char map[] = { 0, 0, 1, 0, 1, 1, 1, 0, 1 };
+		unsigned char map[] = { 0, 0, 1, 
+								0, 1, 1, 
+								1, 0, 1 };
 		int pOutBuffer[7];
 		int steps = FindPath(2, 0, 0, 2, map, 3, 3, pOutBuffer, 7);
 
