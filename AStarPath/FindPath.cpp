@@ -13,14 +13,14 @@ struct Node
 {
 	int x = -1;
 	int y = -1;
-	unsigned int cost = UINT32_MAX; // Cost to get to node
-	unsigned int distance = UINT32_MAX; // Distance from target
-	unsigned int fcost = UINT32_MAX;
+	unsigned int traveled = UINT32_MAX; // distance traveled to get to node
+	unsigned int distance = UINT32_MAX; // Manhattan distance from target
+	unsigned int fcost = UINT32_MAX; // Total cost of node (= traveled + distance)
 	char value = 0; // 0 impassable, 1 traversable
 	Node * parent = nullptr;
 };
 
-// compares nodes based on fcost
+// Compares nodes based on fcost with the lowest moving to the front of the priority_queue
 struct node_compare {
 	bool operator()(const Node * n1, const Node * n2) const
 	{
@@ -48,8 +48,8 @@ Node * SetNewCurrent(std::priority_queue<Node*, std::vector<Node*>, node_compare
 int RetracePath(Node * current, int* pOutBuffer, const int& nOutBufferSize)
 {
 	// Shortest path found, now walk back and take note. Also compensating for smaller buffer
-	int steps = current->cost;
-	int walkback = current->cost;
+	int steps = current->traveled;
+	int walkback = current->traveled;
 	for (walkback; walkback > nOutBufferSize; --walkback)
 	{
 		current = current->parent;
@@ -86,56 +86,55 @@ bool neighbourViability(Node * neighbour, const unsigned char* tMap, const std::
 	}
 }
 
-// 
 void discoverNeighbours(Node * current, Node * neighbour, 
 	const int neighbourDirection[2], const unsigned char* tMap,
 	const std::unordered_map<int, Node*>& explored,
 	std::unordered_map<int, Node*>& costmap,
 	std::priority_queue<Node*, std::vector<Node*>, node_compare>& unexplored)
 {
-	// Set neighbour values
+	// Set neighbour coordinates
 	neighbour->x = current->x + neighbourDirection[0];
 	neighbour->y = current->y + neighbourDirection[1];
 
 	// Keep going if neighbour is viable
 	if (neighbourViability(neighbour, tMap, explored))
 	{
-		// Get the cost of the neighbour
-		unsigned int cost = current->cost + 1;
-		unsigned int tmpDistance = FindDistance(targetX, targetY, neighbour);
+		int tmpTraveled = current->traveled + 1;
 		auto foundNode = costmap.find(neighbour->x + neighbour->y * mapWidth);
 		// If neighbour wasn't found in unexplored, create it, else update the neighbour if new path is shorter.
-		if (foundNode == costmap.end() || (*foundNode).second->cost > cost)
+		if (foundNode == costmap.end() || (*foundNode).second->traveled > tmpTraveled)
 		{
-			neighbour->cost = cost;
-			neighbour->distance = tmpDistance;
-			neighbour->fcost = cost + tmpDistance;
+			neighbour->traveled = current->traveled + 1;
+			neighbour->distance = FindDistance(targetX, targetY, neighbour);
+			neighbour->fcost = tmpTraveled + neighbour->distance;
 			neighbour->parent = current;
 			costmap[neighbour->x + neighbour->y * mapWidth] = neighbour;
 			unexplored.push(neighbour);
 		}
 	}
 }
+
 int FindPath(const int nStartX, const int nStartY,
 	const int nTargetX, const int nTargetY,
 	const unsigned char* pMap, const int nMapWidth, const int nMapHeight,
 	int* pOutBuffer, const int nOutBufferSize)
 {
+	// Init variables, some global
 	bool pathFound = false;
-	int steps = 0;
+	int steps = -1;
 	mapWidth = nMapWidth;
 	mapHeight = nMapHeight;
 	targetX = nTargetX;
 	targetY = nTargetY;
 
-	// Are we starting on the target?
+	// Are we starting on the target? ez check
 	if (nStartX == targetX && nStartY == targetY)
 	{
 		if (nOutBufferSize > 0)
 		{
 			pOutBuffer[0] = targetX + targetY * mapWidth;
 		}
-		return steps;
+		return 0; // steps taken
 	}
 
 	// Might change during runtime because the pointer itself isn't constant
@@ -143,7 +142,7 @@ int FindPath(const int nStartX, const int nStartY,
 	int size = mapWidth * mapHeight;
 	std::copy(pMap, pMap + size, tMap);
 
-	// Create variables
+	// Storage for nodes
 	std::priority_queue<Node*, std::vector<Node*>, node_compare> unexplored;
 	std::unordered_map<int, Node*> costmap;
 	std::unordered_map<int, Node*> explored;
@@ -153,14 +152,16 @@ int FindPath(const int nStartX, const int nStartY,
 	Node * start = new Node();
 	start->x = nStartX;
 	start->y = nStartY;
-	start->cost = 0;
+	start->traveled = 0;
 	start->distance = FindDistance(targetX, targetY, start);
-	start->fcost = start->cost + start->distance;
+	start->fcost = start->traveled + start->distance;
 	start->value = 1;
-	unexplored.push(start); // The index should be good as unique key
+	unexplored.push(start);
 
+	// Keep going till we can't explore more!
 	while (!unexplored.empty())
 	{
+		// Update where we are exploring from
 		Node * current = SetNewCurrent(unexplored, explored);
 
 		// Is the newly explored node the target?
@@ -174,18 +175,11 @@ int FindPath(const int nStartX, const int nStartY,
 		// Its dangerous to go alone, take this
 		const int neighbourDirections[4][2] = { { -1,0 },{ 0,-1 },{ 1,0 },{ 0,1 } };
 		Node * newNeighbours[4] = {};
-		// Check the neighbours, no diagonals using threads
+		// Check the neighbours, no diagonals
 		for (int i = 0; i < 4; ++i)
 		{
 			newNeighbours[i] = new Node;
 			discoverNeighbours(current, newNeighbours[i], neighbourDirections[i], tMap, explored, costmap, unexplored);
-		}
-
-		// If unexplored is empty, that means no path could be found
-		if (unexplored.empty())
-		{
-			pathFound = false;
-			break;
 		}
 	}
 
@@ -201,8 +195,7 @@ int FindPath(const int nStartX, const int nStartY,
 	}
 	delete[] tMap;
 
-	// Return steps if path is found, else -1
-	return pathFound ? steps : -1;	
+	return steps;	
 }
 
 int main()
