@@ -1,6 +1,13 @@
 #include <unordered_map>
+#include <queue>
 #include <algorithm> 
 #include <iostream>
+#include <thread>
+
+int mapWidth;
+int mapHeight;
+int targetX;
+int targetY;
 
 struct Node
 {
@@ -13,6 +20,14 @@ struct Node
 	Node * parent = nullptr;
 };
 
+// compares nodes based on fcost
+struct node_compare {
+	bool operator()(const Node * n1, const Node * n2) const
+	{
+		return n1->fcost > n2->fcost;
+	}
+};
+
 // Distance from start + distance from target
 unsigned int FindDistance(const int& nTargetX, const int& nTargetY,
 	const Node * currNode)
@@ -20,6 +35,87 @@ unsigned int FindDistance(const int& nTargetX, const int& nTargetY,
 	return std::abs(currNode->x - nTargetX) + std::abs(currNode->y - nTargetY);
 }
 
+// Find the smallest element, move it to explored, and return it
+Node * SetNewCurrent(std::priority_queue<Node*, std::vector<Node*>, node_compare>& unexplored, std::unordered_map<int, Node*>& explored)
+{
+	Node * foundNode = unexplored.top();
+	explored[foundNode->x + foundNode->y * mapWidth] = foundNode;
+	unexplored.pop();
+	return foundNode;
+}
+
+// Find your way home!
+int RetracePath(Node * current, int* pOutBuffer, const int& nOutBufferSize)
+{
+	// Shortest path found, now walk back and take note. Also compensating for smaller buffer
+	int steps = current->cost;
+	int walkback = current->cost;
+	for (walkback; walkback > nOutBufferSize; --walkback)
+	{
+		current = current->parent;
+	}
+
+	while (walkback)
+	{
+		pOutBuffer[--walkback] = current->x + current->y * mapWidth;
+		current = current->parent;
+	}
+
+	return steps;
+}
+
+// Check if the neighbour is viable for traversal
+bool neighbourViability(Node * neighbour, const unsigned char* tMap, const std::unordered_map<int, Node*>& explored)
+{
+	// Is the neighbour outside the map?
+	if (neighbour->x < 0 || neighbour->x >= mapWidth || neighbour->y < 0 || neighbour->y >= mapHeight)
+	{
+		return false;
+	}
+
+	// If not travesable or already explored, skip the neighbour
+	neighbour->value = tMap[neighbour->x + neighbour->y * mapWidth];
+	auto exploredNeighbour = explored.find(neighbour->x + neighbour->y * mapWidth);
+	if (!neighbour->value || exploredNeighbour != explored.end())
+	{
+		return false;
+	}
+	else 
+	{
+		return true;
+	}
+}
+
+// 
+void discoverNeighbours(Node * current, Node * neighbour, 
+	const int neighbourDirection[2], const unsigned char* tMap,
+	const std::unordered_map<int, Node*>& explored,
+	std::unordered_map<int, Node*>& costmap,
+	std::priority_queue<Node*, std::vector<Node*>, node_compare>& unexplored)
+{
+	// Set neighbour values
+	neighbour->x = current->x + neighbourDirection[0];
+	neighbour->y = current->y + neighbourDirection[1];
+
+	// Keep going if neighbour is viable
+	if (neighbourViability(neighbour, tMap, explored))
+	{
+		// Get the cost of the neighbour
+		unsigned int cost = current->cost + 1;
+		unsigned int tmpDistance = FindDistance(targetX, targetY, neighbour);
+		auto foundNode = costmap.find(neighbour->x + neighbour->y * mapWidth);
+		// If neighbour wasn't found in unexplored, create it, else update the neighbour if new path is shorter.
+		if (foundNode == costmap.end() || (*foundNode).second->cost > cost)
+		{
+			neighbour->cost = cost;
+			neighbour->distance = tmpDistance;
+			neighbour->fcost = cost + tmpDistance;
+			neighbour->parent = current;
+			costmap[neighbour->x + neighbour->y * mapWidth] = neighbour;
+			unexplored.push(neighbour);
+		}
+	}
+}
 int FindPath(const int nStartX, const int nStartY,
 	const int nTargetX, const int nTargetY,
 	const unsigned char* pMap, const int nMapWidth, const int nMapHeight,
@@ -27,25 +123,29 @@ int FindPath(const int nStartX, const int nStartY,
 {
 	bool pathFound = false;
 	int steps = 0;
+	mapWidth = nMapWidth;
+	mapHeight = nMapHeight;
+	targetX = nTargetX;
+	targetY = nTargetY;
 
-	// Are we starting on the target
-	if (nStartX == nTargetX && nStartY == nTargetY)
+	// Are we starting on the target?
+	if (nStartX == targetX && nStartY == targetY)
 	{
 		if (nOutBufferSize > 0)
 		{
-			pOutBuffer[0] = nTargetX + nTargetY * nMapWidth;
+			pOutBuffer[0] = targetX + targetY * mapWidth;
 		}
 		return steps;
 	}
 
 	// Might change during runtime because the pointer itself isn't constant
-	unsigned char * tMap = new unsigned char[nMapWidth * nMapHeight];
-	int size = nMapWidth * nMapHeight;
+	unsigned char * tMap = new unsigned char[mapWidth * mapHeight];
+	int size = mapWidth * mapHeight;
 	std::copy(pMap, pMap + size, tMap);
 
 	// Create variables
-	std::unordered_map<int, Node*> unexplored;
-	unexplored.reserve(64); // Rough guess on how many unexplored paths there might be at the same time
+	std::priority_queue<Node*, std::vector<Node*>, node_compare> unexplored;
+	std::unordered_map<int, Node*> costmap;
 	std::unordered_map<int, Node*> explored;
 
 
@@ -54,93 +154,31 @@ int FindPath(const int nStartX, const int nStartY,
 	start->x = nStartX;
 	start->y = nStartY;
 	start->cost = 0;
-	start->distance = FindDistance(nTargetX, nTargetY, start);
+	start->distance = FindDistance(targetX, targetY, start);
 	start->fcost = start->cost + start->distance;
 	start->value = 1;
-	explored.reserve(start->cost * 2); // Rough guess on how far it is to get to the point
-	unexplored[start->x + start->y * nMapWidth] = start; // The index should be good as unique key
+	unexplored.push(start); // The index should be good as unique key
 
-	while (!pathFound)
+	while (!unexplored.empty())
 	{
-		Node * current = nullptr;
-
-		// Intentional scope
-		{
-			// Get lowest fcost within unexplored
-			auto expl = std::min_element(unexplored.begin(), unexplored.end(),
-				[](const std::pair<int, Node*> x, const std::pair<int, Node*>  y) { return x.second->fcost < y.second->fcost; });
-			// Found lowest fcost, move to explored from unexplored
-			explored[(*expl).first] = (*expl).second;
-			current = (*expl).second;
-			unexplored.erase(expl);
-		}
+		Node * current = SetNewCurrent(unexplored, explored);
 
 		// Is the newly explored node the target?
-		if (current->x == nTargetX && current->y == nTargetY)
+		if (current->x == targetX && current->y == targetY)
 		{
 			pathFound = true;
-			steps = current->cost;
-
-			// Shortest path found, now walk back and take note. Also compensating for smaller buffer
-			int walkback = steps;
-			for (walkback; walkback > nOutBufferSize; --walkback)
-			{
-				current = current->parent;
-			}
-
-			while (walkback)
-			{
-				pOutBuffer[--walkback] = current->x + current->y * nMapWidth;
-				current = current->parent;
-			}
-
+			steps = RetracePath(current, pOutBuffer, nOutBufferSize);
 			break;
 		}
 
 		// Its dangerous to go alone, take this
 		const int neighbourDirections[4][2] = { { -1,0 },{ 0,-1 },{ 1,0 },{ 0,1 } };
-
-		// Check the neighbours, no diagonals
-		for (auto& neDi : neighbourDirections)
+		Node * newNeighbours[4] = {};
+		// Check the neighbours, no diagonals using threads
+		for (int i = 0; i < 4; ++i)
 		{
-			// Set neighbour values
-			Node * neighbour = new Node();
-			neighbour->x = current->x + neDi[0];
-			neighbour->y = current->y + neDi[1];
-
-			// Is the neighbour outside the map?
-			if (neighbour->x < 0 || neighbour->x >= nMapWidth || neighbour->y < 0 || neighbour->y >= nMapHeight)
-			{
-				continue;
-			}
-
-			// If not travesable or already explored, skip the neighbour
-			neighbour->value = tMap[neighbour->x + neighbour->y * nMapWidth];
-			auto exploredNeighbour = explored.find(neighbour->x + neighbour->y * nMapWidth);
-			if (!neighbour->value || exploredNeighbour != explored.end())
-			{
-				continue;
-			}
-
-			// Get the cost of the neighbour
-			unsigned int cost = current->cost + 1;
-			unsigned int tmpDistance = FindDistance(nTargetX, nTargetY, neighbour);
-			auto foundNode = unexplored.find(neighbour->x + neighbour->y * nMapWidth);
-			// If neighbour wasn't found in unexplored, create it, else update the neighbour if new path is shorter.
-			if (foundNode == unexplored.end())
-			{
-				neighbour->cost = cost;
-				neighbour->distance = tmpDistance;
-				neighbour->fcost = cost + tmpDistance;
-				neighbour->parent = current;
-				unexplored[neighbour->x + neighbour->y * nMapWidth] = neighbour;
-			}
-			else if ((*foundNode).second->cost > cost)
-			{
-				(*foundNode).second->cost = cost;
-				(*foundNode).second->fcost = cost + (*foundNode).second->distance;
-				(*foundNode).second->parent = current;
-			}
+			newNeighbours[i] = new Node;
+			discoverNeighbours(current, newNeighbours[i], neighbourDirections[i], tMap, explored, costmap, unexplored);
 		}
 
 		// If unexplored is empty, that means no path could be found
@@ -156,9 +194,10 @@ int FindPath(const int nStartX, const int nStartY,
 	{
 		delete node.second;
 	}
-	for (auto& node : unexplored)
+	while (!unexplored.empty())
 	{
-		delete node.second;
+		delete unexplored.top(); 
+		unexplored.pop();
 	}
 	delete[] tMap;
 
@@ -170,18 +209,108 @@ int main()
 {
 	{
 		unsigned char map[] = { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-								1, 0, 0, 0, 0, 0, 0, 0, 0, 1,
-								1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
-								1, 0, 0, 0, 0, 0, 0, 1, 0, 1,
-								1, 0, 1, 1, 1, 1, 0, 1, 0, 1,
-								1, 0, 1, 0, 1, 0, 1, 1, 0, 1,
-								1, 0, 1, 0, 1, 0, 1, 1, 0, 1,
-								1, 1, 1, 0, 1, 1, 1, 1, 0, 1,
-								1, 0, 1, 0, 0, 0, 0, 1, 0, 1,
-								1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+			1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			1, 0, 1, 1, 1, 1, 1, 1, 1, 1,
+			1, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+			1, 0, 1, 1, 1, 1, 0, 1, 0, 1,
+			1, 0, 1, 0, 1, 0, 1, 1, 0, 1,
+			1, 0, 1, 0, 1, 0, 1, 1, 0, 1,
+			1, 0, 1, 0, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 0, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 0, 1, 0, 1,
+			1, 0, 1, 0, 1, 0, 1, 1, 0, 1,
+			1, 0, 1, 0, 1, 0, 1, 1, 0, 1,
+			1, 0, 1, 0, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 0, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 0, 1, 0, 1,
+			1, 0, 1, 0, 1, 0, 1, 1, 0, 1,
+			1, 0, 1, 0, 1, 0, 1, 1, 0, 1,
+			1, 0, 1, 0, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 0, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 0, 1, 0, 1,
+			1, 0, 1, 0, 1, 0, 1, 1, 0, 1,
+			1, 0, 1, 0, 1, 0, 1, 1, 0, 1,
+			1, 0, 1, 0, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 0, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 0, 1, 0, 1,
+			1, 0, 1, 0, 1, 0, 1, 1, 0, 1,
+			1, 0, 1, 0, 1, 0, 1, 1, 0, 1,
+			1, 0, 1, 0, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 0, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 0, 1, 0, 1,
+			1, 0, 1, 0, 1, 0, 1, 1, 0, 1,
+			1, 0, 1, 0, 1, 0, 1, 1, 0, 1,
+			1, 0, 1, 0, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 0, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 0, 1, 0, 1,
+			1, 0, 1, 0, 1, 0, 1, 1, 0, 1,
+			1, 0, 1, 0, 1, 0, 1, 1, 0, 1,
+			1, 0, 1, 0, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 0, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 0, 1, 0, 1,
+			1, 0, 1, 0, 1, 0, 1, 1, 0, 1,
+			1, 0, 1, 0, 1, 0, 1, 1, 0, 1,
+			1, 0, 1, 0, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 0, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 0, 1, 0, 1,
+			1, 0, 1, 0, 1, 0, 1, 1, 0, 1,
+			1, 0, 1, 0, 1, 0, 1, 1, 0, 1,
+			1, 0, 1, 0, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 0, 0, 1,
+			1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 1, 0, 1,
+			1, 0, 1, 1, 1, 1, 0, 1, 0, 1,
+			1, 0, 1, 0, 1, 0, 1, 1, 0, 1,
+			1, 0, 1, 0, 1, 0, 1, 1, 0, 1,
+			1, 0, 1, 0, 1, 1, 1, 1, 0, 1,
+			1, 0, 1, 0, 0, 0, 0, 1, 0, 1,
+			1, 1, 1, 1, 1, 1, 1, 1, 1, 1, };
 		int pOutBuffer[100];
 		int outBufferSize = 100;
-		int steps = FindPath(0, 0, 2, 2, map, 10, 10, pOutBuffer, outBufferSize);
+		int steps = FindPath(0, 0, 2, 2, map, 10, 100, pOutBuffer, outBufferSize);
 
 		std::cout << steps << std::endl;
 		for (int i = 0; i < steps && i < outBufferSize; i++)
@@ -190,7 +319,19 @@ int main()
 		}
 		std::cout << std::endl;
 	}
+	{
+		unsigned char map[] = { 1, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1 };
+		int pOutBuffer[12];		
+		int outBufferSize = 12;
+		int steps = FindPath(0, 0, 1, 2, map, 4 , 3, pOutBuffer, outBufferSize);
 
+		std::cout << steps << std::endl;
+		for (int i = 0; i < steps && i < outBufferSize; i++)
+		{
+			std::cout << pOutBuffer[i] << " ";
+		}
+		std::cout << std::endl;
+	}
 	{
 		unsigned char map[] = { 0, 0, 1, 
 								0, 1, 1, 
